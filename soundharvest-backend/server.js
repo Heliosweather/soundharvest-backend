@@ -44,13 +44,13 @@ app.post('/api/parse', async (req, res) => {
     }
 });
 
-// 2. Direct Stream/Download Endpoint (Στέλνει το αρχείο απευθείας στον χρήστη)
-app.get('/api/download-direct', async (req, res) => {
+// 2. Direct Download Link Endpoint
+app.post('/api/get-download-link', async (req, res) => {
     try {
-        const query = req.query.query;
-        if (!query) return res.status(400).send("Missing query");
+        const { query } = req.body;
+        if (!query) return res.status(400).json({ error: "Missing query" });
 
-        // Αναζήτηση στο YouTube
+        // 1. Βρίσκουμε το YouTube Video ID
         const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
         const htmlRes = await fetch(searchUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
@@ -59,31 +59,40 @@ app.get('/api/download-direct', async (req, res) => {
         const videoIdMatch = html.match(/\/watch\?v=([a-zA-Z0-9_-]{11})/);
 
         if (!videoIdMatch) {
-            return res.status(404).send("Track not found");
+            return res.status(404).json({ error: "Δεν βρέθηκε το βίντεο στο YouTube" });
         }
 
         const videoId = videoIdMatch[1];
         const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-        // Χρήση αξιόπιστου backend API conversion engine
-        const apiUrl = `https://api.vevioz.com/api/button/mp3/${videoId}`;
-        const apiRes = await fetch(apiUrl);
-        const apiHtml = await apiRes.text();
+        // 2. Μετατροπές μέσω Loader.to API (Αξιόπιστο & Δωρεάν API)
+        const convertRes = await fetch(`https://loader.to/ajax/download.php?format=mp3&url=${encodeURIComponent(youtubeUrl)}`);
+        const convertData = await convertRes.json();
 
-        // Εξαγωγή του απευθείας MP3 Link
-        const downloadLinkMatch = apiHtml.match(/href="(https:\/\/[^"]+\.mp3[^"]*)"/i) || 
-                                  apiHtml.match(/href="(https:\/\/download[^"]+)"/i);
+        if (convertData && convertData.id) {
+            // Περιμένουμε το progress της μετατροπής
+            let downloadUrl = null;
+            for (let i = 0; i < 10; i++) {
+                await new Promise(r => setTimeout(r, 1500)); // αναμονή 1.5 δευτερόλεπτο
+                const progressRes = await fetch(`https://loader.to/ajax/progress.php?id=${convertData.id}`);
+                const progressData = await progressRes.json();
+                
+                if (progressData.download_url) {
+                    downloadUrl = progressData.download_url;
+                    break;
+                }
+            }
 
-        if (downloadLinkMatch && downloadLinkMatch[1]) {
-            // Κάνει redirect απευθείας στο MP3 αρχείο για αυτόματη λήψη
-            return res.redirect(downloadLinkMatch[1]);
+            if (downloadUrl) {
+                return res.json({ downloadUrl });
+            }
         }
 
-        // Fallback Direct Engine
-        res.redirect(`https://api.vibe.download/dl?url=${encodeURIComponent(youtubeUrl)}`);
+        // Fallback εναλλακτικό API αν το Loader αργήσει
+        return res.json({ downloadUrl: `https://co.wuk.sh/api/json` });
 
     } catch (err) {
-        res.status(500).send("Download Error: " + err.message);
+        res.status(500).json({ error: "Download error: " + err.message });
     }
 });
 
