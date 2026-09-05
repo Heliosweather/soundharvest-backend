@@ -16,7 +16,6 @@ app.post('/api/parse', async (req, res) => {
         let tracksData = [];
 
         try {
-            // Προσπάθεια ανάκτησης όλων των κομματιών της Playlist
             const fetchedTracks = await getTracks(spotifyUrl);
             tracksData = fetchedTracks.map(t => ({
                 title: t.name,
@@ -24,7 +23,6 @@ app.post('/api/parse', async (req, res) => {
                 query: `${t.name} ${t.artists ? t.artists[0].name : ''}`
             }));
         } catch (e) {
-            // Αν είναι μεμονωμένο τραγούδι (Track)
             const details = await getDetails(spotifyUrl);
             if (details && details.preview) {
                 tracksData = [{
@@ -36,7 +34,7 @@ app.post('/api/parse', async (req, res) => {
         }
 
         if (!tracksData || tracksData.length === 0) {
-            return res.status(404).json({ error: "Δεν βρέθηκαν τραγούδια. Βεβαιώσου ότι το link είναι σωστό." });
+            return res.status(404).json({ error: "Δεν βρέθηκαν τραγούδια. Βεβαιώσου ότι το link είναι δημόσιο (Public)." });
         }
 
         res.json({ tracks: tracksData });
@@ -46,12 +44,26 @@ app.post('/api/parse', async (req, res) => {
     }
 });
 
-// Endpoint για λήψη MP3 link
+// Endpoint για άμεσο κατέβασμα MP3
 app.post('/api/download-track', async (req, res) => {
     try {
         const { query } = req.body;
-        const searchQuery = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+        
+        // 1. Βρίσκουμε το πρώτο βίντεο στο YouTube για το τραγούδι
+        const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+        const htmlRes = await fetch(searchUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        });
+        const html = await htmlRes.text();
+        const videoIdMatch = html.match(/\/watch\?v=([a-zA-Z0-9_-]{11})/);
 
+        if (!videoIdMatch) {
+            return res.status(404).json({ error: "Δεν βρέθηκε το τραγούδι στο YouTube." });
+        }
+
+        const youtubeUrl = `https://www.youtube.com/watch?v=${videoIdMatch[1]}`;
+
+        // 2. Ζητάμε από το Cobalt API το άμεσο σύνδεσμο MP3
         const cobaltRes = await fetch("https://api.cobalt.tools/", {
             method: "POST",
             headers: {
@@ -59,7 +71,7 @@ app.post('/api/download-track', async (req, res) => {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                url: searchQuery,
+                url: youtubeUrl,
                 downloadMode: "audio",
                 audioFormat: "mp3"
             })
@@ -67,13 +79,15 @@ app.post('/api/download-track', async (req, res) => {
 
         const cobaltData = await cobaltRes.json();
         
-        if (cobaltData.url) {
-            res.json({ downloadUrl: cobaltData.url });
-        } else {
-            res.json({ downloadUrl: searchQuery });
+        if (cobaltData && cobaltData.url) {
+            return res.json({ downloadUrl: cobaltData.url });
         }
+
+        // Αν το Cobalt είναι απασχολημένο/down
+        return res.status(503).json({ error: "Ο διακομιστής λήψης είναι προσωρινά απασχολημένος. Δοκίμασε ξανά σε λίγο." });
+
     } catch (err) {
-        res.status(500).json({ error: "Download failed" });
+        res.status(500).json({ error: "Σφάλμα κατά τη λήψη: " + err.message });
     }
 });
 
