@@ -1,48 +1,52 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const { getTracks, getDetails } = require('spotify-url-info')(fetch);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Endpoint για ανάλυση Playlist/Track
+// Endpoint για ανάλυση Playlist ή Single Track
 app.post('/api/parse', async (req, res) => {
     try {
         const { spotifyUrl } = req.body;
         if (!spotifyUrl) return res.status(400).json({ error: "Missing URL" });
 
-        let cleanUrl = spotifyUrl.split('?')[0];
-        let embedUrl = cleanUrl.replace("open.spotify.com/", "open.spotify.com/embed/");
+        let tracksData = [];
 
-        const embedRes = await fetch(embedUrl);
-        const embedHtml = await embedRes.text();
-
-        const tracks = [];
-        const regex = /"name":"(.*?)".*?"artists":\[{"name":"(.*?)"/g;
-        let match;
-
-        while ((match = regex.exec(embedHtml)) !== null) {
-            tracks.push({
-                title: match[1],
-                artist: match[2],
-                query: `${match[1]} ${match[2]}`
-            });
+        try {
+            // Προσπάθεια ανάκτησης όλων των κομματιών της Playlist
+            const fetchedTracks = await getTracks(spotifyUrl);
+            tracksData = fetchedTracks.map(t => ({
+                title: t.name,
+                artist: t.artists ? t.artists.map(a => a.name).join(', ') : (t.artist || ''),
+                query: `${t.name} ${t.artists ? t.artists[0].name : ''}`
+            }));
+        } catch (e) {
+            // Αν είναι μεμονωμένο τραγούδι (Track)
+            const details = await getDetails(spotifyUrl);
+            if (details && details.preview) {
+                tracksData = [{
+                    title: details.preview.title,
+                    artist: details.preview.artist,
+                    query: `${details.preview.title} ${details.preview.artist}`
+                }];
+            }
         }
 
-        if (tracks.length === 0) {
-            return res.status(404).json({ error: "Δεν βρέθηκαν τραγούδια. Βεβαιώσου ότι η playlist είναι Public." });
+        if (!tracksData || tracksData.length === 0) {
+            return res.status(404).json({ error: "Δεν βρέθηκαν τραγούδια. Βεβαιώσου ότι το link είναι σωστό." });
         }
 
-        // Επιστρέφουμε τη λίστα των τραγουδιών στο Frontend
-        res.json({ tracks });
+        res.json({ tracks: tracksData });
 
     } catch (err) {
-        res.status(500).json({ error: "Server Error: " + err.message });
+        res.status(500).json({ error: "Αποτυχία ανάγνωσης Spotify link: " + err.message });
     }
 });
 
-// Endpoint για λήψη MP3 link για κάθε τραγούδι
+// Endpoint για λήψη MP3 link
 app.post('/api/download-track', async (req, res) => {
     try {
         const { query } = req.body;
@@ -66,13 +70,12 @@ app.post('/api/download-track', async (req, res) => {
         if (cobaltData.url) {
             res.json({ downloadUrl: cobaltData.url });
         } else {
-            // Fallback αν το Cobalt είναι απασχολημένο: Στέλνει τον χρήστη στην αναζήτηση YouTube
-            res.json({ downloadUrl: `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}` });
+            res.json({ downloadUrl: searchQuery });
         }
     } catch (err) {
         res.status(500).json({ error: "Download failed" });
     }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
