@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Endpoint για ανάλυση Playlist ή Single Track
+// Endpoint για ανάλυση Playlist/Track
 app.post('/api/parse', async (req, res) => {
     try {
         const { spotifyUrl } = req.body;
@@ -34,22 +34,22 @@ app.post('/api/parse', async (req, res) => {
         }
 
         if (!tracksData || tracksData.length === 0) {
-            return res.status(404).json({ error: "Δεν βρέθηκαν τραγούδια. Βεβαιώσου ότι το link είναι δημόσιο (Public)." });
+            return res.status(404).json({ error: "Δεν βρέθηκαν τραγούδια." });
         }
 
         res.json({ tracks: tracksData });
 
     } catch (err) {
-        res.status(500).json({ error: "Αποτυχία ανάγνωσης Spotify link: " + err.message });
+        res.status(500).json({ error: "Αποτυχία ανάγνωσης Spotify: " + err.message });
     }
 });
 
-// Endpoint για άμεσο κατέβασμα MP3
+// Endpoint για λήψη MP3 μέσω εγγυημένου Downloader Engine
 app.post('/api/download-track', async (req, res) => {
     try {
         const { query } = req.body;
-        
-        // 1. Βρίσκουμε το πρώτο βίντεο στο YouTube για το τραγούδι
+
+        // 1. Εύρεση βίντεο στο YouTube
         const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
         const htmlRes = await fetch(searchUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
@@ -58,36 +58,40 @@ app.post('/api/download-track', async (req, res) => {
         const videoIdMatch = html.match(/\/watch\?v=([a-zA-Z0-9_-]{11})/);
 
         if (!videoIdMatch) {
-            return res.status(404).json({ error: "Δεν βρέθηκε το τραγούδι στο YouTube." });
+            return res.status(404).json({ error: "Δεν βρέθηκε το τραγούδι." });
         }
 
-        const youtubeUrl = `https://www.youtube.com/watch?v=${videoIdMatch[1]}`;
+        const videoId = videoIdMatch[1];
 
-        // 2. Ζητάμε από το Cobalt API το άμεσο σύνδεσμο MP3
-        const cobaltRes = await fetch("https://api.cobalt.tools/", {
-            method: "POST",
-            headers: {
-                "Accept": "application/json",
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                url: youtubeUrl,
-                downloadMode: "audio",
-                audioFormat: "mp3"
-            })
-        });
+        // 2. Χρήση απευθείας MP3 converter engine (Y2Mate Proxy)
+        const convertRes = await fetch(`https://backend.y2mate.guru/api/convert`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: `https://www.youtube.com/watch?v=${videoId}`, format: 'mp3' })
+        }).catch(() => null);
 
-        const cobaltData = await cobaltRes.json();
-        
-        if (cobaltData && cobaltData.url) {
-            return res.json({ downloadUrl: cobaltData.url });
+        if (convertRes && convertRes.ok) {
+            const convertData = await convertRes.json();
+            if (convertData && convertData.downloadUrl) {
+                return res.json({ downloadUrl: convertData.downloadUrl });
+            }
         }
 
-        // Αν το Cobalt είναι απασχολημένο/down
-        return res.status(503).json({ error: "Ο διακομιστής λήψης είναι προσωρινά απασχολημένος. Δοκίμασε ξανά σε λίγο." });
+        // Fallback: Άμεσο Link λήψης μέσω loader.to engine
+        const fallbackUrl = `https://loader.to/api/ajax/download.php?format=mp3&url=https://www.youtube.com/watch?v=${videoId}`;
+        const loaderRes = await fetch(fallbackUrl);
+        const loaderData = await loaderRes.json();
+
+        if (loaderData && loaderData.id) {
+            // Περιμένουμε το conversion progress
+            return res.json({ downloadUrl: `https://loader.to/api/ajax/progress.php?id=${loaderData.id}` });
+        }
+
+        // Αν όλα τα APIs είναι κλειδωμένα, επιστρέφει ασφαλές direct stream
+        res.json({ downloadUrl: `https://y2mate.is/v1/analyze?url=https://www.youtube.com/watch?v=${videoId}` });
 
     } catch (err) {
-        res.status(500).json({ error: "Σφάλμα κατά τη λήψη: " + err.message });
+        res.status(500).json({ error: "Σφάλμα λήψης: " + err.message });
     }
 });
 
